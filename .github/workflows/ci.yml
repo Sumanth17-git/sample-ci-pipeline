@@ -1,4 +1,4 @@
-name: CI Pipeline
+name: CI Pipeline with DORA Metrics
 
 on:
   push:
@@ -10,6 +10,7 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -25,3 +26,72 @@ jobs:
       - name: Run tests
         run: pytest || echo "No tests yet"
 
+      # Report Deployment on Success
+      - name: Report Deployment to Datadog (DORA Metrics)
+        run: |
+          # --- Unified Service Tagging ---
+          export DD_SERVICE="ci-pipeline-demo"
+          export DD_ENV="dev"
+          export DD_VERSION="${GITHUB_SHA}"
+          export DD_TAGS="team:sre,project:notes-app"
+
+          deploy_start=$(date +%s%N)
+          deploy_end=$((deploy_start + 5000000000))   # +5s offset
+
+          curl -X POST "https://api.${{ secrets.DD_SITE }}/api/v2/dora/deployment" \
+            -H "Accept: application/json" \
+            -H "Content-Type: application/json" \
+            -H "DD-API-KEY: ${{ secrets.DD_API_KEY }}" \
+            -d @- <<EOF
+          {
+            "data": {
+              "attributes": {
+                "service": "ci-pipeline-demo",
+                "env": "dev",
+                "version": "${{ github.sha }}",
+                "started_at": $deploy_start,
+                "finished_at": $deploy_end,
+                "git": {
+                  "commit_sha": "${{ github.sha }}",
+                  "repository_url": "https://github.com/${{ github.repository }}"
+                },
+                "team": "sre",
+                "custom_tags": [
+                  "pipeline:ci",
+                  "project:python-app"
+                ]
+              }
+            }
+          }
+          EOF
+
+      # Report Incident on Failure
+      - name: Report Incident to Datadog (on failure)
+        if: failure()
+        run: |
+          incident_start=$(date +%s%N)
+          incident_end=$((incident_start + 5000000000))   # +5s offset
+
+          curl -X POST "https://api.${{ secrets.DD_SITE }}/api/v2/dora/incident" \
+            -H "Accept: application/json" \
+            -H "Content-Type: application/json" \
+            -H "DD-API-KEY: ${{ secrets.DD_API_KEY }}" \
+            -d @- <<EOF
+          {
+            "data": {
+              "attributes": {
+                "services": ["ci-pipeline-demo"],
+                "started_at": $incident_start,
+                "finished_at": $incident_end,
+                "env": "dev",
+                "name": "CI Pipeline build failure",
+                "severity": "high",
+                "version": "${{ github.sha }}",
+                "git": {
+                  "commit_sha": "${{ github.sha }}",
+                  "repository_url": "https://github.com/${{ github.repository }}"
+                }
+              }
+            }
+          }
+          EOF
